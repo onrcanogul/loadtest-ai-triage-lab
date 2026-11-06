@@ -1,0 +1,20 @@
+spring:
+  application:
+    name: scoring-service
+
+server:
+  port: 8081
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  tracing:
+    sampling:
+      probability: 1.0   # every request gets a traceId in MDC (no exporter configured)
+    propagation:
+      type: w3c          # continue the traceparent sent by credit-service -> same traceId in both services
+
+failure:
+  pool-exhaustion: ${FAILURE_POOL_EXHAUSTION:true}

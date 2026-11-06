@@ -1,0 +1,90 @@
+name: loadtest-ai-triage-lab
+
+services:
+  loki:
+    image: grafana/loki:3.4.2
+    container_name: loki
+    command: ["-config.file=/etc/loki/loki.yaml"]
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./loki/loki.yaml:/etc/loki/loki.yaml:ro
+      - loki-data:/loki
+
+  alloy:
+    image: grafana/alloy:v1.8.1
+    container_name: alloy
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy/data
+      - --server.http.listen-addr=0.0.0.0:12345
+    ports:
+      - "12345:12345"
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - alloy-data:/var/lib/alloy/data
+    depends_on:
+      - loki
+
+  grafana:
+    image: grafana/grafana:11.6.0
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana   # keeps service accounts / tokens across `compose down`
+    depends_on:
+      - loki
+
+  scoring-service:
+    build: ./scoring-service
+    container_name: scoring-service
+    ports:
+      - "8081:8081"
+    environment:
+      FAILURE_POOL_EXHAUSTION: "true"
+
+  credit-service:
+    build: ./credit-service
+    container_name: credit-service
+    ports:
+      - "8080:8080"
+    environment:
+      SCORING_BASE_URL: http://scoring-service:8081
+      FAILURE_NPE_BUG: "true"
+    depends_on:
+      - scoring-service
+
+  k6:
+    image: grafana/k6:1.0.0
+    container_name: k6
+    profiles: ["loadtest"]
+    environment:
+      BASE_URL: http://credit-service:8080
+    volumes:
+      - ./k6:/scripts:ro
+    command: ["run", "/scripts/shopping-loan-load.js"]
+    depends_on:
+      - credit-service
+
+  # Stack-independent log-contract sample (.NET). Not part of the default stack:
+  #   docker compose --profile samples up -d --build dotnet-echo-service
+  dotnet-echo-service:
+    build: ./samples/dotnet-echo-service
+    container_name: dotnet-echo-service
+    profiles: ["samples"]
+    ports:
+      - "8090:8090"
+
+volumes:
+  loki-data:
+  alloy-data:
+  grafana-data:

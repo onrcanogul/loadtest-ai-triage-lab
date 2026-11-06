@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+  <!-- One JSON object per line on stdout. Alloy picks it up from the container log. -->
+  <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+      <fieldNames>
+        <timestamp>@timestamp</timestamp>
+        <level>level</level>
+        <logger>logger</logger>
+        <message>message</message>
+        <thread>thread</thread>
+        <stackTrace>stackTrace</stackTrace>
+        <version>[ignore]</version>
+        <levelValue>[ignore]</levelValue>
+      </fieldNames>
+      <customFields>{"service":"scoring-service"}</customFields>
+      <!-- MDC (traceId, spanId, customerId, endpoint, ...) is included by default -->
+      <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+        <maxDepthPerThrowable>15</maxDepthPerThrowable>
+        <shortenedClassNameLength>30</shortenedClassNameLength>
+        <rootCauseFirst>true</rootCauseFirst>
+        <exclude>^sun\.reflect\..*</exclude>
+        <exclude>^java\.lang\.reflect\..*</exclude>
+        <exclude>^org\.apache\.(catalina|coyote|tomcat)\..*</exclude>
+        <exclude>^org\.springframework\.(web\.filter|security)\..*</exclude>
+        <exclude>^jakarta\.servlet\..*</exclude>
+      </throwableConverter>
+    </encoder>
+  </appender>
+
+  <root level="INFO">
+    <appender-ref ref="JSON"/>
+  </root>
+</configuration>

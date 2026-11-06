@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "grafana-lab": {
+      "command": "./scripts/grafana-mcp.sh",
+      "args": ["lab"]
+    },
+    "grafana-uat": {
+      "command": "./scripts/grafana-mcp.sh",
+      "args": ["uat"]
+    }
+  }
+}

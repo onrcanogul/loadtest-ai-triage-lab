@@ -1,0 +1,73 @@
+// Collect container logs of this compose project from the Docker socket and ship them to Loki.
+// Labels: only `service` (from the container name) and `level` (from the JSON log line).
+// High-cardinality fields such as traceId stay in the line / structured metadata, never as labels.
+
+discovery.docker "lab" {
+  host = "unix:///var/run/docker.sock"
+}
+
+discovery.relabel "lab" {
+  targets = discovery.docker.lab.targets
+
+  // only containers of this compose project
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    regex         = "loadtest-ai-triage-lab"
+    action        = "keep"
+  }
+
+  // the load generator is not an observed service: its output never reaches Loki
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    regex         = "k6"
+    action        = "drop"
+  }
+
+  // "/credit-service" -> service="credit-service"
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "service"
+  }
+}
+
+loki.source.docker "lab" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.lab.output
+  forward_to = [loki.process.json.receiver]
+}
+
+loki.process "json" {
+  // PII masking BEFORE anything reaches Loki: the customerId JSON value keeps its first 2
+  // characters, the rest becomes "***"  ("customerId":"C123456" -> "customerId":"C1***").
+  // Runs on the raw line, so the masked value is what Loki stores and what any AI client sees.
+  // Add one stage.replace per identifier-carrying field in a corporate pipeline (tckn, iban, ...).
+  stage.replace {
+    expression = "\"customerId\":\"[^\"]{2}(?P<customerId_tail>[^\"]*)\""
+    replace    = "***"
+  }
+
+  // Non-JSON lines (loki/grafana/alloy own logs) simply skip these stages.
+  stage.json {
+    expressions = {
+      level   = "level",
+      traceId = "traceId",
+    }
+  }
+
+  stage.labels {
+    values = { level = "" }
+  }
+
+  stage.structured_metadata {
+    values = { traceId = "" }
+  }
+
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

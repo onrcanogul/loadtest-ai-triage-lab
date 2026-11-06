@@ -1,0 +1,15 @@
+# secrets: per-environment MCP env files (examples are kept)
+.env.mcp
+.env.mcp.*
+!.env.mcp.*.example
+
+# build output
+**/target/
+**/bin/
+**/obj/
+
+# local-only tooling state
+.claude/settings.local.json
+.idea/
+.DS_Store
+*.log

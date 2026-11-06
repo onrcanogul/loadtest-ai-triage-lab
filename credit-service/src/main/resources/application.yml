@@ -1,0 +1,25 @@
+spring:
+  application:
+    name: credit-service
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  tracing:
+    sampling:
+      probability: 1.0   # every request gets a traceId in MDC (no exporter configured)
+    propagation:
+      type: w3c          # outgoing RestClient calls carry `traceparent` -> scoring-service logs the same traceId
+
+scoring:
+  base-url: ${SCORING_BASE_URL:http://scoring-service:8081}
+  connect-timeout: 1s
+  read-timeout: 5s       # > scoring-service's 2s pool wait + worst-case latency, so its 503 (not our timeout) is the signal
+
+failure:
+  npe-bug: ${FAILURE_NPE_BUG:true}

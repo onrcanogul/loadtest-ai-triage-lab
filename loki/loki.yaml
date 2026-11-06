@@ -1,0 +1,38 @@
+# Minimal single-binary Loki 3.x config for a local lab (filesystem storage, no auth).
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  log_level: warn
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2024-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+limits_config:
+  allow_structured_metadata: true   # traceId is stored as structured metadata, not as a label
+  volume_enabled: true
+  discover_service_name: []         # no automatic service_name label; `service` comes from Alloy
+  ingestion_rate_mb: 32
+  ingestion_burst_size_mb: 64
+
+ruler:
+  alertmanager_url: http://localhost:9093

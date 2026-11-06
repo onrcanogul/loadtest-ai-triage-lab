@@ -1,0 +1,42 @@
+  █ THRESHOLDS 
+
+    http_req_duration
+    ✗ 'p(95)<800' p(95)=3.09s
+
+    http_req_failed
+    ✗ 'rate<0.05' rate=30.06%
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......................: 4318   35.398344/s
+    checks_succeeded...................: 69.93% 3020 out of 4318
+    checks_failed......................: 30.06% 1298 out of 4318
+
+    ✗ apply -> 201
+      ↳  53% — ✓ 1510 / ✗ 1298
+    ✓ get -> 200
+
+    HTTP
+    http_req_duration.......................................................: avg=1.13s   min=238µs    med=565.19ms max=3.35s p(90)=2.74s p(95)=3.09s
+      { expected_response:true }............................................: avg=787.4ms min=238µs    med=104.69ms max=3.35s p(90)=2.99s p(95)=3.12s
+    http_req_failed.........................................................: 30.06% 1298 out of 4318
+    http_reqs...............................................................: 4318   35.398344/s
+
+    EXECUTION
+    iteration_duration......................................................: avg=2.04s   min=485.45ms med=2.3s     max=3.65s p(90)=3.35s p(95)=3.44s
+    iterations..............................................................: 2796   22.921207/s
+    vus.....................................................................: 80     min=1            max=80
+    vus_max.................................................................: 80     min=80           max=80
+
+    NETWORK
+    data_received...........................................................: 1.0 MB 8.2 kB/s
+    data_sent...............................................................: 875 kB 7.2 kB/s
+
+
+
+
+running (2m02.0s), 00/80 VUs, 2796 complete and 80 interrupted iterations
+default ✗ [  72% ] 79/80 VUs  2m02.0s/2m50.0s
+time="2026-11-06T13:28:51Z" level=error msg="thresholds on metrics 'http_req_duration, http_req_failed' were crossed; at least one has abortOnFail enabled, stopping test prematurely"
+
