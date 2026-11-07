@@ -43,6 +43,7 @@ Shopping-loan API, package `com.lab.credit`:
 | `POST /api/v1/loans/shopping/apply` | body `{customerId, amount, installmentCount, campaignCode?}` → `201 {applicationId, status, monthlyInstallment}` |
 | `GET /api/v1/loans/{applicationId}` | `200` or `404` |
 | `GET /actuator/health` | health |
+| `GET /v3/api-docs` | OpenAPI 3 document (springdoc); the `openapi` tool of the `ai-workspace` repo snapshots it |
 
 Flow: `LoanController → LoanApplicationService → ScoringClient (HTTP → scoring-service) → InstallmentCalculator → LoanApplicationRepository (ConcurrentHashMap)`.
 
@@ -58,6 +59,7 @@ Credit-score service (stands in for a credit bureau), package `com.lab.scoring`,
 |---|---|
 | `POST /api/v1/scores` | body `{customerId}` → `200 {customerId, score}`; **503** `{error: SCORING_POOL_EXHAUSTED}` when the pool is full |
 | `GET /actuator/health` | health |
+| `GET /v3/api-docs` | OpenAPI 3 document (springdoc); the `openapi` tool of the `ai-workspace` repo snapshots it |
 
 Flow: `ScoreController → ScoringService` (semaphore pool + deterministic score).
 

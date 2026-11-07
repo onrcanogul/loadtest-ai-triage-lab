@@ -40,6 +40,7 @@ Alışveriş kredisi API'si, paket `com.lab.credit`:
 | `POST /api/v1/loans/shopping/apply` | body `{customerId, amount, installmentCount, campaignCode?}` → `201 {applicationId, status, monthlyInstallment}` |
 | `GET /api/v1/loans/{applicationId}` | `200` veya `404` |
 | `GET /actuator/health` | sağlık |
+| `GET /v3/api-docs` | OpenAPI 3 dokümanı (springdoc); `ai-workspace` reposundaki `openapi` aracı bunu snapshot olarak alır |
 
 Akış: `LoanController → LoanApplicationService → ScoringClient (HTTP → scoring-service) → InstallmentCalculator → LoanApplicationRepository (ConcurrentHashMap)`.
 
@@ -56,6 +57,7 @@ Kredi skoru servisi (KKB yerine geçer), paket `com.lab.scoring`, port 8081:
 |---|---|
 | `POST /api/v1/scores` | body `{customerId}` → `200 {customerId, score}`; havuz doluysa **503** `{error: SCORING_POOL_EXHAUSTED}` |
 | `GET /actuator/health` | sağlık |
+| `GET /v3/api-docs` | OpenAPI 3 dokümanı (springdoc); `ai-workspace` reposundaki `openapi` aracı bunu snapshot olarak alır |
 
 Akış: `ScoreController → ScoringService` (Semaphore havuzu + deterministik skor).
 

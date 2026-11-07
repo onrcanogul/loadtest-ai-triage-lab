@@ -39,6 +39,12 @@
       <groupId>io.micrometer</groupId>
       <artifactId>micrometer-tracing-bridge-brave</artifactId>
     </dependency>
+    <dependency>
+      <!-- OpenAPI 3 document at /v3/api-docs (no UI). The ai-workspace `openapi` tool snapshots it. -->
+      <groupId>org.springdoc</groupId>
+      <artifactId>springdoc-openapi-starter-webmvc-api</artifactId>
+      <version>2.8.6</version>
+    </dependency>
     <!-- single-line JSON logs on stdout -->
     <dependency>
       <groupId>net.logstash.logback</groupId>
