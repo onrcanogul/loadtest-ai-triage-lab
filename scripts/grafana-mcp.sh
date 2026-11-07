@@ -9,18 +9,24 @@
 #   Clients register one MCP server per environment (grafana-lab, grafana-uat), so a triage
 #   against UAT can never silently read lab data, and vice versa.
 #
-# Two run modes (picked automatically):
-#   1) Binary  - if MCP_GRAFANA_BIN is set, or an `mcp-grafana` binary is on PATH
-#                (go install github.com/grafana/mcp-grafana/cmd/mcp-grafana@latest, or a GitHub release).
-#                No Docker needed; GRAFANA_URL defaults to http://localhost:3000.
-#   2) Docker  - otherwise `docker run mcp/grafana`; GRAFANA_URL defaults to http://host.docker.internal:3000.
-#                Corporate proxy / custom CA are passed through: HTTPS_PROXY, HTTP_PROXY, NO_PROXY and
-#                SSL_CERT_FILE (the CA bundle file is bind-mounted read-only into the container).
+# Run modes:
+#   binary (DEFAULT, every environment) - runs an `mcp-grafana` executable directly:
+#           MCP_GRAFANA_BIN=/path/to/mcp-grafana, or `mcp-grafana` on PATH
+#           (go install github.com/grafana/mcp-grafana/cmd/mcp-grafana@latest, or a GitHub release).
+#           No Docker. GRAFANA_URL defaults to http://localhost:3000.
+#   docker (LAB ONLY)                   - `docker run mcp/grafana`, used for the lab when no binary is
+#           installed, because the lab's Grafana already runs in docker compose on this machine.
+#           GRAFANA_URL defaults to http://host.docker.internal:3000.
+#   Any other environment (uat, preprod, ...) never falls back to Docker: corporate workstations are not
+#   assumed to have it. Set MCP_GRAFANA_MODE=docker explicitly if you really want Docker there.
+#   Corporate proxy / custom CA pass through in both modes: HTTPS_PROXY, HTTP_PROXY, NO_PROXY and
+#   SSL_CERT_FILE (in docker mode the CA bundle is bind-mounted read-only into the container).
 #
-# Env (from .env.mcp or the caller):
-#   GRAFANA_SERVICE_ACCOUNT_TOKEN  required (scripts/create-grafana-sa-token.sh writes it)
+# Env (from .env.mcp.<environment> or the caller):
+#   GRAFANA_SERVICE_ACCOUNT_TOKEN  required (scripts/create-grafana-sa-token.sh writes it for the lab)
 #   GRAFANA_URL                    optional, mode-dependent default (see above)
-#   MCP_GRAFANA_BIN                optional, path to an mcp-grafana binary -> forces binary mode
+#   MCP_GRAFANA_BIN                optional, path to an mcp-grafana binary
+#   MCP_GRAFANA_MODE               optional, binary | docker  (default: binary; docker auto-fallback only for lab)
 #   MCP_GRAFANA_EXTRA_ARGS         optional, extra flags appended to the server command line
 #   HTTPS_PROXY / HTTP_PROXY / NO_PROXY / SSL_CERT_FILE   optional, passed through
 set -euo pipefail
@@ -51,7 +57,7 @@ fi
 echo "grafana-mcp.sh: environment=$MCP_ENV env-file=$(basename "$ENV_FILE")" >&2
 
 # Tool surface: ONLY datasource + loki tool categories, and no write tools even inside those.
-# Flag names verified against `docker run --rm mcp/grafana --help` (mcp-grafana image, 2026-11).
+# Flag names verified against `mcp-grafana --help` (mcp/grafana image, 2026-11).
 # `--enabled-tools` is an allowlist, so every other category (dashboard, alerting, incident, oncall,
 # admin, api, search, prometheus, sift, asserts, pyroscope, navigation, annotations, rendering,
 # snapshot, plugin, config, provisioning, proxied, folder) is off without naming each one.
@@ -62,13 +68,39 @@ MCP_ARGS=(-t stdio --enabled-tools datasource,loki --disable-write)
 # shellcheck disable=SC2206
 [ -n "${MCP_GRAFANA_EXTRA_ARGS:-}" ] && MCP_ARGS+=(${MCP_GRAFANA_EXTRA_ARGS})
 
-# ---------------------------------------------------------------- mode 1: native binary (no Docker)
+# ---------------------------------------------------------------- mode selection
+MODE="${MCP_GRAFANA_MODE:-binary}"
+case "$MODE" in
+  binary|docker) ;;
+  *) echo "grafana-mcp.sh: MCP_GRAFANA_MODE='$MODE' must be 'binary' or 'docker'" >&2; exit 1 ;;
+esac
+
 BIN="${MCP_GRAFANA_BIN:-}"
-if [ -z "$BIN" ] && command -v mcp-grafana >/dev/null 2>&1; then
+if [ "$MODE" = "binary" ] && [ -z "$BIN" ] && command -v mcp-grafana >/dev/null 2>&1; then
   BIN="$(command -v mcp-grafana)"
 fi
 
-if [ -n "$BIN" ]; then
+if [ "$MODE" = "binary" ] && [ -z "$BIN" ]; then
+  if [ "$MCP_ENV" = "lab" ] && command -v docker >/dev/null 2>&1; then
+    # Lab convenience only: the lab stack is docker compose anyway, so the MCP server may run there too.
+    echo "grafana-mcp.sh: no mcp-grafana binary found; lab falls back to docker (set MCP_GRAFANA_BIN to avoid this)" >&2
+    MODE="docker"
+  else
+    cat >&2 <<MSG
+grafana-mcp.sh: environment '$MCP_ENV' needs an mcp-grafana binary and none was found
+  (MCP_GRAFANA_BIN is unset and 'mcp-grafana' is not on PATH).
+  Docker is used automatically for the lab only; other environments run the native binary so that
+  a corporate workstation without Docker works unchanged.
+  Install: go install github.com/grafana/mcp-grafana/cmd/mcp-grafana@latest   (or a GitHub release binary)
+  then add  MCP_GRAFANA_BIN=/path/to/mcp-grafana  to $(basename "$ENV_FILE").
+  To force Docker anyway: MCP_GRAFANA_MODE=docker in that file.
+MSG
+    exit 1
+  fi
+fi
+
+# ---------------------------------------------------------------- binary mode (default)
+if [ "$MODE" = "binary" ]; then
   if [ ! -f "$BIN" ] || [ ! -x "$BIN" ]; then
     echo "grafana-mcp.sh: MCP_GRAFANA_BIN='$BIN' is not an executable file" >&2
     exit 1
@@ -87,13 +119,9 @@ if [ -n "$BIN" ]; then
   exec "$BIN" "${MCP_ARGS[@]}"
 fi
 
-# ---------------------------------------------------------------- mode 2: docker image
+# ---------------------------------------------------------------- docker mode (lab, or MCP_GRAFANA_MODE=docker)
 if ! command -v docker >/dev/null 2>&1; then
-  cat >&2 <<'MSG'
-grafana-mcp.sh: neither an mcp-grafana binary (MCP_GRAFANA_BIN / PATH) nor `docker` was found.
-  Docker-free setup: go install github.com/grafana/mcp-grafana/cmd/mcp-grafana@latest
-  (or download a release binary) and set MCP_GRAFANA_BIN=/path/to/mcp-grafana in .env.mcp.
-MSG
+  echo "grafana-mcp.sh: MCP_GRAFANA_MODE=docker but 'docker' is not installed" >&2
   exit 1
 fi
 
@@ -114,4 +142,5 @@ if [ -n "${SSL_CERT_FILE:-}" ]; then
 fi
 
 export GRAFANA_URL GRAFANA_SERVICE_ACCOUNT_TOKEN
+echo "grafana-mcp.sh: docker mode (mcp/grafana) -> $GRAFANA_URL" >&2
 exec docker "${DOCKER_ARGS[@]}" mcp/grafana "${MCP_ARGS[@]}"

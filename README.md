@@ -25,7 +25,7 @@ k6 (profile: loadtest) ──HTTP──> credit-service:8080 ──HTTP + tracep
                                         ▼
                                       loki:3100  <── grafana:3000 (dashboard + datasource uid=loki)
                                                           ▲
-                              AI istemcisi ──stdio──> mcp/grafana (docker) ── service account token
+                              AI istemcisi ──stdio──> mcp-grafana (binary; docker sadece lab) ── service account token
 ```
 
 Aynı istek iki serviste de **aynı `traceId`** ile loglanır: `credit-service`'in auto-configure edilmiş
@@ -151,9 +151,10 @@ dosyası + istemci konfiglerine bir sunucu satırı. UAT'ye, test script'lerine 
 geliştirici makinesinden Grafana URL'sine ağ erişimi (VPN/proxy) yeter.
 
 `scripts/grafana-mcp.sh <ortam>` → `.env.mcp.<ortam>`'ı okur ve `mcp/grafana` sunucusunu **sadece okuma, sadece Loki** modunda
-(`-t stdio --enabled-tools datasource,loki --disable-write`) başlatır; docker yolunda Grafana'ya konteynerden
-`http://host.docker.internal:3000` ile ulaşır, PATH'te ya da `MCP_GRAFANA_BIN`'de bir `mcp-grafana` binary'si varsa
-docker'sız çalışır (bkz. "Kurumsal ortam notları"). Sunduğu araç listesi `scripts/mcp-tools-list.sh <ortam>` ile görülür (9 araç).
+(`-t stdio --enabled-tools datasource,loki --disable-write`) başlatır. **Varsayılan mod native binary'dir**: PATH'teki ya da
+`MCP_GRAFANA_BIN`'deki `mcp-grafana` çalıştırılır, Docker gerekmez. Docker'a (`docker run mcp/grafana`) yalnızca **lab**
+ortamı, binary yoksa, kendiliğinden düşer; `uat` gibi diğer ortamlar asla düşmez (bkz. "Kurumsal ortam notları").
+Sunduğu araç listesi `scripts/mcp-tools-list.sh <ortam>` ile görülür (9 araç).
 
 Her istemci sadece bu script'i çalıştıran ince bir konfig taşır; **yeni bir istemci eklemek = bir konfig dosyası**:
 
@@ -176,10 +177,9 @@ Triage sırasında kod düzenlenmez; çalışan sürüm IDE'deki koddan farklı 
 "Sürüm kuralı").
 İstemciniz relatif `./scripts/grafana-mcp.sh` yolunu çözemezse mutlak yol yazın.
 
-**Binary alternatifi (docker istemiyorsanız):** `go install github.com/grafana/mcp-grafana/cmd/mcp-grafana@latest`
-ya da GitHub release'den indirin. İstemci konfigleri değişmez: script PATH'teki `mcp-grafana`'yı ya da `.env.mcp.<ortam>`'daki
-`MCP_GRAFANA_BIN=/path/to/mcp-grafana`'yı bulunca docker yerine onu çalıştırır ve `GRAFANA_URL`'i `http://localhost:3000`
-yapar (host.docker.internal değil).
+**Binary kurulumu (UAT için zorunlu, lab için isteğe bağlı):** `go install github.com/grafana/mcp-grafana/cmd/mcp-grafana@latest`
+ya da GitHub release'den indirin; `.env.mcp.<ortam>`'a `MCP_GRAFANA_BIN=/path/to/mcp-grafana` yazın. İstemci konfigleri
+değişmez. Binary modda `GRAFANA_URL` varsayılanı `http://localhost:3000`'dir (host.docker.internal değil).
 
 ### 3. Triage'ı çalıştırma
 
@@ -344,20 +344,31 @@ limitleri için sorgu disiplinini verir: seçici `| json a, b`, küçük `limit`
 
 ### 4. Docker'sız çalışma, proxy ve kurumsal CA
 
-`scripts/grafana-mcp.sh` modu kendisi seçer: `MCP_GRAFANA_BIN` tanımlıysa ya da PATH'te `mcp-grafana` varsa binary'yi doğrudan
-çalıştırır (`GRAFANA_URL` varsayılanı `http://localhost:3000`; `.env.mcp.lab`'da `host.docker.internal` yazıyorsa localhost'a
-çevrilir); yoksa `docker run mcp/grafana`. Docker yolunda `HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY` konteynere geçirilir ve
-`SSL_CERT_FILE` tanımlıysa CA paketi konteynere salt-okunur bağlanıp `SSL_CERT_FILE` olarak verilir (kurumsal TLS inspection).
-`MCP_GRAFANA_EXTRA_ARGS` ile ek flag eklenebilir. Hatalar açık mesajla biter:
+Docker bu projede iki ayrı iş yapar ve ikisi karıştırılmamalıdır: (1) `docker-compose.yml` bankadaki UAT + Loki + Grafana'nın
+**yerel taklididir**, kuruma hiçbir parçası gitmez; (2) `scripts/grafana-mcp.sh` MCP sunucusunu geliştirici makinesinde
+başlatır ve Docker'a dokunan tek geliştirici-tarafı parça budur. Kurumsal iş istasyonunda Docker varsayılmadığı için script'in
+**varsayılan modu native binary'dir**:
+
+| Ortam | Binary bulundu (`MCP_GRAFANA_BIN` / PATH) | Binary yok |
+|---|---|---|
+| `lab` | binary | `docker run mcp/grafana` (uyarı basar; lab yığını zaten compose'da) |
+| `uat` ve diğerleri | binary | **hata + kurulum talimatı**; Docker'a düşmez |
+
+`MCP_GRAFANA_MODE=docker` yazılırsa herhangi bir ortamda Docker zorlanabilir (bilinçli seçim, varsayılan değil).
+Binary modda `GRAFANA_URL` varsayılanı `http://localhost:3000`'dir; `.env.mcp.lab`'daki `host.docker.internal` localhost'a
+çevrilir. Proxy (`HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY`) ve kurumsal CA (`SSL_CERT_FILE`) iki modda da geçer; docker
+modunda CA paketi konteynere salt-okunur bağlanır (kurumsal TLS inspection). `MCP_GRAFANA_EXTRA_ARGS` ile ek flag eklenebilir.
+Hatalar açık mesajla biter:
 
 ```bash
 MCP_GRAFANA_BIN=/bin/false scripts/grafana-mcp.sh
 ```
 
 → `grafana-mcp.sh: MCP_GRAFANA_BIN='/bin/false' is not an executable file` (macOS'ta `/bin/false` yoktur; Linux'ta aynı
-komut `'/bin/false --help' failed - this does not look like an mcp-grafana binary` verir), çıkış kodu 1. Ne binary ne docker
-varsa kurulum talimatı basar. Docker'sız kurulum: `go install github.com/grafana/mcp-grafana/cmd/mcp-grafana@latest` ya da
-GitHub release binary'si; `.env.mcp.<ortam>`'a `MCP_GRAFANA_BIN=/path/to/mcp-grafana` ekleyin. İstemci konfigleri değişmez.
+komut `'/bin/false --help' failed - this does not look like an mcp-grafana binary` verir), çıkış kodu 1.
+`scripts/grafana-mcp.sh uat` binary olmadan `environment 'uat' needs an mcp-grafana binary and none was found` der ve
+kurulum talimatı basar; Docker yüklü olsa bile çalıştırmaz. Kurulum: `go install github.com/grafana/mcp-grafana/cmd/mcp-grafana@latest`
+ya da GitHub release binary'si; `.env.mcp.<ortam>`'a `MCP_GRAFANA_BIN=/path/to/mcp-grafana` ekleyin. İstemci konfigleri değişmez.
 
 ### Bilinen açık: çok satırlı stack trace
 

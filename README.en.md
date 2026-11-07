@@ -28,7 +28,7 @@ k6 (profile: loadtest) ──HTTP──> credit-service:8080 ──HTTP + tracep
                                         ▼
                                       loki:3100  <── grafana:3000 (dashboard + datasource uid=loki)
                                                           ▲
-                              AI client ──stdio──> mcp/grafana (docker or binary) ── service account token
+                              AI client ──stdio──> mcp-grafana (binary; docker lab-only) ── service account token
 ```
 
 One request is logged by both services with the **same `traceId`**: the auto-configured `RestClient.Builder` of
@@ -150,9 +150,10 @@ load-test scripts or to the code running in UAT is needed; network access from t
 (VPN / proxy) is enough.
 
 `scripts/grafana-mcp.sh <env>` reads `.env.mcp.<env>` and starts `mcp/grafana` **read-only, Loki-only**
-(`-t stdio --enabled-tools datasource,loki --disable-write`). In docker mode it reaches Grafana at
-`http://host.docker.internal:3000`; if an `mcp-grafana` binary is on `PATH` or in `MCP_GRAFANA_BIN`, it runs without
-Docker (see "Corporate environment notes"). `scripts/mcp-tools-list.sh <env>` prints the exposed tools (9).
+(`-t stdio --enabled-tools datasource,loki --disable-write`). **The default mode is a native binary**: it runs
+`mcp-grafana` from `PATH` or `MCP_GRAFANA_BIN`, no Docker needed. Only the **lab** environment falls back to
+`docker run mcp/grafana` when no binary is installed; `uat` and any other environment never do (see "Corporate
+environment notes"). `scripts/mcp-tools-list.sh <env>` prints the exposed tools (9).
 
 Every client carries only a thin config that runs this script; **adding a client = one config file**:
 
@@ -178,10 +179,9 @@ against querying the wrong environment.) Never put triage instructions into alwa
 
 If your client cannot resolve the relative `./scripts/grafana-mcp.sh` path, use an absolute one.
 
-**Binary alternative (no Docker):** `go install github.com/grafana/mcp-grafana/cmd/mcp-grafana@latest` or a GitHub
-release binary. Client configs stay the same: when the script finds `mcp-grafana` on `PATH` or
-`MCP_GRAFANA_BIN=/path/to/mcp-grafana` in `.env.mcp.<env>`, it runs that instead of Docker and defaults `GRAFANA_URL`
-to `http://localhost:3000`.
+**Binary install (required for UAT, optional for lab):** `go install github.com/grafana/mcp-grafana/cmd/mcp-grafana@latest`
+or a GitHub release binary, then `MCP_GRAFANA_BIN=/path/to/mcp-grafana` in `.env.mcp.<env>`. Client configs stay the
+same. In binary mode `GRAFANA_URL` defaults to `http://localhost:3000` (not host.docker.internal).
 
 ### 3. Running the triage
 
@@ -356,12 +356,21 @@ than the window.
 
 ### 4. Docker-free mode, proxy and corporate CA
 
-`scripts/grafana-mcp.sh` picks its mode: with `MCP_GRAFANA_BIN` set or `mcp-grafana` on `PATH` it runs the binary
-directly (`GRAFANA_URL` defaults to `http://localhost:3000`; a `host.docker.internal` value in `.env.mcp.lab` is
-rewritten to localhost); otherwise it runs `docker run mcp/grafana`. In docker mode `HTTPS_PROXY` / `HTTP_PROXY` /
-`NO_PROXY` are passed into the container, and when `SSL_CERT_FILE` is set the CA bundle is bind-mounted read-only and
-exported as `SSL_CERT_FILE` (corporate TLS inspection). `MCP_GRAFANA_EXTRA_ARGS` appends extra flags. Errors are
-explicit:
+Docker plays two separate roles here and they must not be confused: (1) `docker-compose.yml` is a **local stand-in** for
+the corporate UAT + Loki + Grafana, and none of it moves to the company; (2) `scripts/grafana-mcp.sh` starts the MCP
+server on the developer machine, and that is the only developer-side piece that can touch Docker. Because a corporate
+workstation is not assumed to have Docker, the script's **default mode is the native binary**:
+
+| Environment | Binary found (`MCP_GRAFANA_BIN` / PATH) | No binary |
+|---|---|---|
+| `lab` | binary | `docker run mcp/grafana` (with a warning; the lab stack is compose anyway) |
+| `uat` and others | binary | **error + install instructions**; never falls back to Docker |
+
+`MCP_GRAFANA_MODE=docker` forces Docker in any environment (a deliberate choice, not the default). In binary mode
+`GRAFANA_URL` defaults to `http://localhost:3000`; a `host.docker.internal` value in `.env.mcp.lab` is rewritten to
+localhost. Proxy (`HTTPS_PROXY` / `HTTP_PROXY` / `NO_PROXY`) and corporate CA (`SSL_CERT_FILE`) pass through in both
+modes; in docker mode the CA bundle is bind-mounted read-only into the container (corporate TLS inspection).
+`MCP_GRAFANA_EXTRA_ARGS` appends extra flags. Errors are explicit:
 
 ```bash
 MCP_GRAFANA_BIN=/bin/false scripts/grafana-mcp.sh
@@ -369,7 +378,8 @@ MCP_GRAFANA_BIN=/bin/false scripts/grafana-mcp.sh
 
 → `grafana-mcp.sh: MCP_GRAFANA_BIN='/bin/false' is not an executable file` (on macOS `/bin/false` does not exist; on
 Linux the same command yields `'/bin/false --help' failed - this does not look like an mcp-grafana binary`), exit code 1.
-With neither a binary nor Docker it prints installation instructions. Docker-free setup:
+`scripts/grafana-mcp.sh uat` without a binary says `environment 'uat' needs an mcp-grafana binary and none was found`
+and prints install instructions; it does not run Docker even when Docker is installed. Install:
 `go install github.com/grafana/mcp-grafana/cmd/mcp-grafana@latest` or a GitHub release binary, then
 `MCP_GRAFANA_BIN=/path/to/mcp-grafana` in `.env.mcp.<env>`. Client configs do not change.
 
