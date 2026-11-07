@@ -53,10 +53,16 @@ Lab'da `customerId` ve `applicationId` alanları da vardır; triage'da **girdi o
 Triage'ın verisi, istemcinin açık olduğu makinedeki kod veya local ortam **değildir**; seçilen ortamın
 Grafana'sından (HTTP API) gelir. Her ortamın kendi MCP sunucusu ve env dosyası vardır:
 
-| Ortam | MCP sunucusu | Tanım dosyası | Not |
-|---|---|---|---|
-| `lab` | `grafana-lab` | `triage/environments/lab.md` | Yerel docker compose; kod = bu klasör |
-| `uat` | `grafana-uat` | `triage/environments/uat.md` | Kurumsal UAT; koda ve ortama doğrudan erişim yok, yalnızca Grafana API |
+| Ortam | Tetikleme | MCP sunucusu | Tanım dosyası | Not |
+|---|---|---|---|---|
+| `lab` | `ide` | `grafana-lab` | `triage/environments/lab.md` | Yerel docker compose; kod = bu klasör; sohbetten çağrılabilir |
+| `dev` | `script` | `grafana-dev` | `triage/environments/dev.md` | Kurumsal DEV; yalnızca `scripts/triage.sh dev …` |
+| `uat` | `script` | `grafana-uat` | `triage/environments/uat.md` | Kurumsal UAT; koda ve ortama doğrudan erişim yok, yalnızca Grafana API; yalnızca `scripts/triage.sh uat …` |
+
+Tetikleme tipi (tanım dosyasının ilk satırındaki `<!-- triage-env type=… -->`): `ide` tipli ortamın MCP
+sunucusu IDE'lerde kayıtlıdır ve sohbetten çağrılır; `script` tipli ortam hiçbir IDE'de kayıtlı değildir,
+sunucusu yalnızca `scripts/triage.sh` koşarken onun çocuk süreci olarak vardır. Sohbette `script` tipli bir
+ortam için triage istenirse yapma; kullanıcıyı `scripts/triage.sh <ortam> …` komutuna yönlendir.
 
 Kurallar:
 - Ortam kullanıcı tarafından açıkça verilir; verilmediyse **sor, varsayma**.

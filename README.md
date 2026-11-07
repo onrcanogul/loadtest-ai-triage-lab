@@ -144,11 +144,27 @@ dosyasına `GRAFANA_URL` + `GRAFANA_SERVICE_ACCOUNT_TOKEN` yazar (`.gitignore`'d
 ### 2. MCP sunucusu (tüm istemciler için tek nokta, ortam başına bir sunucu)
 
 **Ortam ayrımı.** Triage'ın verisi, IDE'deki kod veya local ortam değildir; seçilen ortamın Grafana'sından API ile
-gelir. Bu yüzden her ortamın kendi MCP sunucusu (`grafana-lab`, `grafana-uat`), kendi env dosyası
-(`.env.mcp.lab`, `.env.mcp.uat`) ve kendi tanım dosyası (`triage/environments/<ortam>.md`: datasource uid, servis
-label'ları, alan eşlemesi, çalışan sürümün nereden okunacağı) vardır. Yeni bir ortam eklemek = env dosyası + tanım
-dosyası + istemci konfiglerine bir sunucu satırı. UAT'ye, test script'lerine veya UAT'deki koda erişim gerekmez;
-geliştirici makinesinden Grafana URL'sine ağ erişimi (VPN/proxy) yeter.
+gelir. Bu yüzden her ortamın kendi MCP sunucusu (`grafana-<ortam>`), kendi env dosyası (`.env.mcp.<ortam>`) ve kendi
+tanım dosyası (`triage/environments/<ortam>.md`: datasource uid, servis label'ları, alan eşlemesi, çalışan sürümün
+nereden okunacağı) vardır. UAT'ye, test script'lerine veya UAT'deki koda erişim gerekmez; geliştirici makinesinden
+Grafana URL'sine ağ erişimi (VPN/proxy) yeter.
+
+**Ortam tipi: `ide` ya da `script`.** Tanım dosyasının ilk satırı `<!-- triage-env type=ide|script -->` ortamın nasıl
+tetiklenebileceğini belirler ve bu, "istemediğimiz hiçbir akış UAT'ye uğramasın" gereksiniminin teknik karşılığıdır:
+
+| Tip | Ortamlar | IDE'de kayıtlı mı | Tetikleme | Sunucunun ömrü |
+|---|---|---|---|---|
+| `ide` | yalnızca `lab` | evet (`.mcp.json`, `.vscode/mcp.json`, `.cursor/mcp.json`) | sohbetten (`/loadtest-triage lab …`, `/lab-loadtest-triage`) ve `scripts/triage.sh lab …` | IDE yönetir |
+| `script` | `dev`, `uat` (kurumsal) | **hayır, hiçbir yerde** | **yalnızca** `scripts/triage.sh <ortam> <from> <to>` | o komutun çocuk süreci; komut bitince ölür |
+
+`script` tipli bir ortam için `scripts/grafana-mcp.sh` ancak `triage.sh`'in verdiği canlı bir kilit dosyasıyla
+(`LOADTEST_TRIAGE_LOCK`, içinde çalışan `triage.sh`'in pid'i) başlar; kilit yoksa ya da pid ölmüşse başlamaz. Yani bir
+IDE sohbeti, bir prompt dosyası ya da loglardan gelen bir "talimat" UAT'ye ulaşamaz, çünkü ulaşacağı bir sunucu yoktur.
+Copilot'un sohbet tarafında bunu sağlayan bir mekanizma yoktur (MCP sunucusu workspace'e kayıtlıysa her sohbet görür,
+prompt dosyasındaki `tools` yalnızca o prompt'u daraltır); kilit bu yüzden istemcide değil sunucudadır. Tanım dosyası
+ya da işaret yoksa ortam `script` sayılır (kapalı varsayılan). Yeni bir ortam eklemek = env dosyası + tanım dosyası;
+`ide` tipliyse ayrıca istemci konfiglerine bir satır. `scripts/gen-prompts.sh --check`, `script` tipli bir ortamın
+IDE konfiglerine ya da prompt dosyalarına sızmasını CI'da yakalar.
 
 `scripts/grafana-mcp.sh <ortam>` → `.env.mcp.<ortam>`'ı okur ve `mcp/grafana` sunucusunu **sadece okuma, sadece Loki** modunda
 (`-t stdio --enabled-tools datasource,loki --disable-write`) başlatır. **Varsayılan mod native binary'dir**: PATH'teki ya da
@@ -158,23 +174,22 @@ Sunduğu araç listesi `scripts/mcp-tools-list.sh <ortam>` ile görülür (9 ara
 
 Her istemci sadece bu script'i çalıştıran ince bir konfig taşır; **yeni bir istemci eklemek = bir konfig dosyası**:
 
-| İstemci | MCP konfigi | Triage girişi |
-|---|---|---|
-| Claude Code | [`.mcp.json`](.mcp.json) (`grafana-lab`, `grafana-uat`) | [`.claude/skills/loadtest-triage/SKILL.md`](.claude/skills/loadtest-triage/SKILL.md) → `/loadtest-triage uat son 15 dk` |
-| GitHub Copilot (VS Code) | [`.vscode/mcp.json`](.vscode/mcp.json) (`grafana-lab`, `grafana-uat`) | [`.github/prompts/uat-loadtest-triage.prompt.md`](.github/prompts/uat-loadtest-triage.prompt.md) ve `lab-...` → Chat'te `/uat-loadtest-triage` |
-| Cursor | [`.cursor/mcp.json`](.cursor/mcp.json) (`grafana-lab`, `grafana-uat`) | Chat'e "`triage/LOADTEST_TRIAGE.md`'yi uat ortamı, son 15 dk için uygula" |
+| İstemci | MCP konfigi (yalnızca `ide` tipli `lab`) | Sohbetten triage (lab) | Kilitli ortam (dev, uat) |
+|---|---|---|---|
+| Claude Code | [`.mcp.json`](.mcp.json) (`grafana-lab`) | [`.claude/skills/loadtest-triage/SKILL.md`](.claude/skills/loadtest-triage/SKILL.md) → `/loadtest-triage lab --last 15m` | `scripts/triage.sh uat … --agent claude` |
+| GitHub Copilot (VS Code) | [`.vscode/mcp.json`](.vscode/mcp.json) (`grafana-lab`) | [`.github/prompts/lab-loadtest-triage.prompt.md`](.github/prompts/lab-loadtest-triage.prompt.md) → Chat'te `/lab-loadtest-triage` | `scripts/triage.sh uat … --agent copilot` (Copilot CLI) |
+| Cursor | [`.cursor/mcp.json`](.cursor/mcp.json) (`grafana-lab`) | Chat'e "`triage/LOADTEST_TRIAGE.md`'yi lab ortamı, son 15 dk için uygula" | `scripts/triage.sh` (claude ya da copilot CLI) |
 
 Hepsi aynı script'e, aynı env değişkenlerine bağlanır; içerik [`triage/LOADTEST_TRIAGE.md`](triage/LOADTEST_TRIAGE.md)'de tek kopyadır.
 
-**Gündelik akıştan izolasyon.** Triage, normal kodlama skill/prompt'larından ayrı tutulur: Copilot prompt dosyaları
-yalnızca `/uat-loadtest-triage` gibi açık çağrıyla çalışır ve `tools` alanıyla sadece o ortamın `grafana-<ortam>`
-araçlarına izinlidir. Bu dosyalar elle yazılmaz: `scripts/gen-prompts.sh`, `triage/environments/*.md` listesindeki her
-ortam için tek şablondan (`triage/templates/loadtest-triage.prompt.md.tmpl`) üretir; ortam ekleyince ya da şablonu
-değiştirince yeniden çalıştırın, `scripts/gen-prompts.sh --check` CI'da kaymayı yakalar. (Tek prompt + ortam parametresi
-tercih edilmedi: `tools` listesi sabittir ve yanlış ortama sorgu atmayı engelleyen tek sert kilit odur.); `copilot-instructions.md` gibi her zaman yüklenen dosyalara triage talimatı **konmaz**. Claude Code
-skill'i de açık `/loadtest-triage <ortam>` çağrısı ister ve yalnızca `mcp__grafana-<ortam>__*` araçlarını kullanır.
-Triage sırasında kod düzenlenmez; çalışan sürüm IDE'deki koddan farklı olabilir (bkz. `triage/environments/uat.md`,
-"Sürüm kuralı").
+**Gündelik akıştan izolasyon (lab).** Lab'de bile triage normal kodlama skill/prompt'larından ayrı tutulur: Copilot
+prompt dosyası yalnızca `/lab-loadtest-triage` açık çağrısıyla çalışır ve `tools` alanıyla sadece `grafana-lab`
+araçlarına izinlidir. Bu dosya elle yazılmaz: `scripts/gen-prompts.sh`, `ide` tipli her ortam için tek şablondan
+(`triage/templates/loadtest-triage.prompt.md.tmpl`) üretir, `script` tipli ortamların prompt dosyasını siler;
+`scripts/gen-prompts.sh --check` CI'da kaymayı ve sızmayı yakalar. `copilot-instructions.md` gibi her zaman yüklenen
+dosyalara triage talimatı **konmaz**. Claude Code skill'i açık `/loadtest-triage <ortam>` çağrısı ister, `script` tipli
+bir ortam istenirse triage yapmaz ve `triage.sh` komutunu verir. Triage sırasında kod düzenlenmez; çalışan sürüm
+IDE'deki koddan farklı olabilir (bkz. `triage/environments/uat.md`, "Sürüm kuralı").
 İstemciniz relatif `./scripts/grafana-mcp.sh` yolunu çözemezse mutlak yol yazın.
 
 **Binary kurulumu (UAT için zorunlu, lab için isteğe bağlı):** `go install github.com/grafana/mcp-grafana/cmd/mcp-grafana@latest`
@@ -183,16 +198,43 @@ değişmez. Binary modda `GRAFANA_URL` varsayılanı `http://localhost:3000`'dir
 
 ### 3. Triage'ı çalıştırma
 
-- **Claude Code:** proje klasöründe `claude` aç, `.mcp.json` sunucularını onayla, `/loadtest-triage lab son 15 dk`
-  (UAT için `/loadtest-triage uat ...`, önce `.env.mcp.uat` ve `triage/environments/uat.md` doldurulmuş olmalı).
+**Kilitli ortamlar (dev, uat): tek komut.**
+
+```bash
+scripts/triage.sh uat 2026-11-06T14:00:00+03:00 2026-11-06T14:40:00+03:00 --service credit-service
+```
+
+Pencere biçimleri: iki RFC3339 zaman, `--last 30m`, ya da `--date 2026-11-06 --from 14:00 --to 14:40 --tz +03:00`.
+Seçenekler: `--service <ad>` (varsayılan `credit-service`), `--agent claude|copilot` (varsayılan: PATH'te `copilot` varsa
+o, yoksa `claude`), `--out <dosya>`, `--dry-run` (hiçbir şey çalıştırmadan komutu, geçici MCP konfigini ve prompt'u
+gösterir; bankada ilk gün bununla başlayın). Script sırasıyla: pencereyi `triage-window.py` ile doğrular → kilit dosyası
+ve yalnızca bu koşuya ait geçici bir MCP konfigi yazar → sabit prompt'u (talimat + ortam tanımı + pencere, dosya içerikleri
+gömülü) agent CLI'ya etkileşimsiz verir; agent'ın dosya, kabuk veya yazma aracı yoktur, yalnızca `grafana-<ortam>`'ın
+9 okuma aracı vardır → raporu `triage/reports/<ortam>-<from>-<to>-<servis>.md` olarak yazar → çıkışta (kesilse bile)
+kilidi ve geçici konfigi siler, sunucu ölür. Sunucunun önünde `scripts/mcp-audit-proxy.py` durur: her `tools/call`
+(araç adı, LogQL, zaman aralığı; log içeriği değil) `…audit.jsonl` olarak raporun yanına yazılır. **Sıfır çağrı = rapor
+reddedilir** (çıkış 3, metin `.rejected.md` olarak saklanır): lab'de Copilot CLI izin sözdizimi yanlışken model tek sorgu
+atmadan tamamen uydurma bir rapor yazmıştı; bu kilit o durumu yakalar ve "kim, ne zaman, neyi sorguladı" sorusunu cevaplar. Claude için komut `claude -p --mcp-config <geçici> --strict-mcp-config
+--allowedTools mcp__grafana-<ortam>`, Copilot CLI için `copilot -p … --additional-mcp-config @<geçici> --allow-tool
+grafana-<ortam> -s --no-ask-user`; hesabın varsayılan modeli reddediliyorsa (`CAPIError 400 model is not supported`)
+`COPILOT_MODEL=gpt-4.1` gibi bir model verin. **Copilot politikası:** bu makinedeki Copilot CLI 1.0.15 hesabı özel MCP
+sunucularını engelliyordu (`--output-format json` çıktısında `1 MCP server was blocked by policy: 'grafana-lab'`); model
+sunucuyu hiç görmedi, uydurma bir rapor yazdı ve denetim kilidi onu reddetti. Kurumda Copilot CLI'ın çalışması için
+"MCP servers in Copilot" politikasının açık olması gerekir; bunu ilk gün `--dry-run` ve lab koşusuyla doğrulayın.
+Eski sürümlerde `-p` + MCP birlikteliği de hatalıydı ([github/copilot-cli#1592](https://github.com/github/copilot-cli/issues/1592),
+[#633](https://github.com/github/copilot-cli/issues/633)). Claude Code yolu lab'de uçtan uca doğrulandı.
+Token'ı diske yazmak istemiyorsanız `.env.mcp.<ortam>`'a `GRAFANA_SERVICE_ACCOUNT_TOKEN_CMD="vault kv get …"` yazın;
+wrapper her başlangıçta komutu çalıştırır, çıktıyı sunucuya ortam değişkeni olarak verir.
+
+**Lab: sohbetten.**
+
+- **Claude Code:** proje klasöründe `claude` aç, `.mcp.json` sunucusunu onayla, `/loadtest-triage lab --last 15m`.
   Headless: `claude -p "/loadtest-triage lab --last 15m" --mcp-config .mcp.json --allowedTools "mcp__grafana-lab,Read,Skill,Bash(python3 scripts/triage-window.py:*)"`
-  (son izin, pencere script'inin çalışmasına yarar; verilmezse skill saat dilimli RFC3339 çiftini doğrulayıp aynen kullanır)
-  (CLI'da geçerli bir oturum gerekir; "OAuth session expired" alırsanız önce `claude login`. Bu makinede npm ile kurulu
-  `claude` bozuktu, Claude Desktop'ın kendi binary'si — `$CLAUDE_CODE_EXECPATH` — ile koşuldu.)
-- **Copilot:** VS Code'da `.vscode/mcp.json` → ilgili sunucuyu "Start"; Copilot Chat (Agent mode) → `/uat-loadtest-triage`
-  (veya `/lab-loadtest-triage`), pencereyi gir.
-- **Cursor:** Settings → MCP'de `grafana-uat` (veya `grafana-lab`) sunucusunu etkinleştir, chat'te talimat dosyasını
-  o ortam için uygulamasını iste.
+  (son izin pencere script'i içindir; CLI'da geçerli bir oturum gerekir, "OAuth session expired" alırsanız `claude login`).
+- **Copilot:** VS Code'da `.vscode/mcp.json` → `grafana-lab` "Start"; Copilot Chat (Agent mode) → `/lab-loadtest-triage`, pencereyi gir.
+- **Cursor:** Settings → MCP'de `grafana-lab`'ı etkinleştir, chat'te talimat dosyasını lab için uygulamasını iste.
+- Aynı script lab için de çalışır: `scripts/triage.sh lab --last 15m`. Bankaya gidecek bir prompt değişikliği önce
+  burada, sonra `dev`'de aynı komutla denenir.
 
 Triage'ın girdileri ortam adı ve zaman penceresidir ("yük testi UAT'de şu tarihte koştu"); talimat dosyası yalnızca
 o ortamı ve o pencereyi sorgular.
@@ -388,9 +430,10 @@ loki/loki.yaml         single-binary Loki 3.x
 alloy/config.alloy     docker log toplama → Loki
 grafana/               datasource + dashboard provisioning
 k6/                    yük senaryosu
-triage/                LOADTEST_TRIAGE.md (tek triage kaynağı)
+triage/                LOADTEST_TRIAGE.md (tek triage kaynağı), environments/<ortam>.md (ilk satır: type=ide|script), templates/, reports/
 docs/LOG_CONTRACT.md   stack'ten bağımsız log sözleşmesi (triage'ın beklediği alanlar)
 samples/dotnet-echo-service/  sözleşmeyi uygulayan ASP.NET Core + Serilog örneği (profile: samples)
-scripts/               SA token + MCP sunucu script'leri + mcp-tools-list.sh (araç listesi doğrulama)
+scripts/               triage.sh (kilitli ortamların tek girişi), grafana-mcp.sh (MCP wrapper: binary, kilit, token komutu),
+                       mcp-audit-proxy.py (araç çağrısı denetim izi), triage-window.py, gen-prompts.sh, create-grafana-sa-token.sh, mcp-tools-list.sh
 .mcp.json .vscode/ .cursor/ .claude/ .github/   istemci konfigleri (ince)
 ```

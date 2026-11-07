@@ -142,12 +142,29 @@ Creates a **Viewer** service account named `ai-triage` plus a token through the 
 ### 2. The MCP server: one entry point for every client, one server per environment
 
 **Environment separation.** The triage never reads the code or the local environment of the IDE; its data comes from
-the Grafana of the *selected environment* over HTTP. Each environment therefore has its own MCP server (`grafana-lab`,
-`grafana-uat`), its own env file (`.env.mcp.lab`, `.env.mcp.uat`) and its own definition file
-(`triage/environments/<env>.md`: datasource uid, service labels, field mapping, where to read the deployed version).
-Adding an environment = env file + definition file + one server entry in the client configs. No access to UAT, to the
-load-test scripts or to the code running in UAT is needed; network access from the developer machine to the Grafana URL
+the Grafana of the *selected environment* over HTTP. Each environment therefore has its own MCP server
+(`grafana-<env>`), its own env file (`.env.mcp.<env>`) and its own definition file (`triage/environments/<env>.md`:
+datasource uid, service labels, field mapping, where to read the deployed version). No access to UAT, to the load-test
+scripts or to the code running in UAT is needed; network access from the developer machine to the Grafana URL
 (VPN / proxy) is enough.
+
+**Environment type: `ide` or `script`.** The first line of the definition file, `<!-- triage-env type=ide|script -->`,
+decides how the environment can be triggered. This is the technical form of the requirement "no flow we did not ask
+for may ever touch UAT":
+
+| Type | Environments | Registered in an IDE | Trigger | Server lifetime |
+|---|---|---|---|---|
+| `ide` | `lab` only | yes (`.mcp.json`, `.vscode/mcp.json`, `.cursor/mcp.json`) | from chat (`/loadtest-triage lab …`, `/lab-loadtest-triage`) and `scripts/triage.sh lab …` | managed by the IDE |
+| `script` | `dev`, `uat` (corporate) | **no, nowhere** | **only** `scripts/triage.sh <env> <from> <to>` | child of that command; dies when it ends |
+
+For a `script`-type environment `scripts/grafana-mcp.sh` starts only with a live lock file handed over by `triage.sh`
+(`LOADTEST_TRIAGE_LOCK`, containing the pid of the running `triage.sh`); without it, or with a dead pid, it refuses.
+So an IDE chat, a prompt file or an "instruction" found in a log line cannot reach UAT: there is no server to reach.
+Copilot itself offers no such mechanism (a server registered in the workspace is visible to every chat, and a prompt
+file's `tools` list only narrows that prompt), which is why the lock lives in the server, not in the client. A missing
+definition file or marker counts as `script` (fail closed). Adding an environment = env file + definition file, plus
+one line in the client configs only for an `ide`-type one. `scripts/gen-prompts.sh --check` fails in CI when a
+`script`-type environment leaks into an IDE config or a prompt file.
 
 `scripts/grafana-mcp.sh <env>` reads `.env.mcp.<env>` and starts `mcp/grafana` **read-only, Loki-only**
 (`-t stdio --enabled-tools datasource,loki --disable-write`). **The default mode is a native binary**: it runs
@@ -157,25 +174,24 @@ environment notes"). `scripts/mcp-tools-list.sh <env>` prints the exposed tools 
 
 Every client carries only a thin config that runs this script; **adding a client = one config file**:
 
-| Client | MCP config | Triage entry point |
-|---|---|---|
-| Claude Code | [`.mcp.json`](.mcp.json) (`grafana-lab`, `grafana-uat`) | [`.claude/skills/loadtest-triage/SKILL.md`](.claude/skills/loadtest-triage/SKILL.md) → `/loadtest-triage uat <from> <to>` |
-| GitHub Copilot (VS Code) | [`.vscode/mcp.json`](.vscode/mcp.json) (`grafana-lab`, `grafana-uat`) | [`.github/prompts/uat-loadtest-triage.prompt.md`](.github/prompts/uat-loadtest-triage.prompt.md) and `lab-...` → `/uat-loadtest-triage` in Chat |
-| Cursor | [`.cursor/mcp.json`](.cursor/mcp.json) (`grafana-lab`, `grafana-uat`) | Ask the chat to "apply `triage/LOADTEST_TRIAGE.md` for environment uat, window ..." |
+| Client | MCP config (only the `ide`-type `lab`) | Triage from chat (lab) | Locked environments (dev, uat) |
+|---|---|---|---|
+| Claude Code | [`.mcp.json`](.mcp.json) (`grafana-lab`) | [`.claude/skills/loadtest-triage/SKILL.md`](.claude/skills/loadtest-triage/SKILL.md) → `/loadtest-triage lab --last 15m` | `scripts/triage.sh uat … --agent claude` |
+| GitHub Copilot (VS Code) | [`.vscode/mcp.json`](.vscode/mcp.json) (`grafana-lab`) | [`.github/prompts/lab-loadtest-triage.prompt.md`](.github/prompts/lab-loadtest-triage.prompt.md) → `/lab-loadtest-triage` in Chat | `scripts/triage.sh uat … --agent copilot` (Copilot CLI) |
+| Cursor | [`.cursor/mcp.json`](.cursor/mcp.json) (`grafana-lab`) | Ask the chat to "apply `triage/LOADTEST_TRIAGE.md` for environment lab, last 15 min" | `scripts/triage.sh` (claude or copilot CLI) |
 
 All of them run the same script with the same env variables; the content exists once, in
 [`triage/LOADTEST_TRIAGE.md`](triage/LOADTEST_TRIAGE.md).
 
-**Isolation from everyday skills and prompts.** The triage is kept apart from normal coding prompts: Copilot prompt files
-only run on an explicit `/uat-loadtest-triage` call and their `tools` list allows just that environment's
-`grafana-<env>` tools. Those files are not hand-written: `scripts/gen-prompts.sh` renders one per environment in
-`triage/environments/*.md` from a single template (`triage/templates/loadtest-triage.prompt.md.tmpl`); re-run it after
-adding an environment or editing the template, and use `scripts/gen-prompts.sh --check` in CI to catch drift. (A single
-prompt with an environment *parameter* was rejected on purpose: the `tools` list is static and is the only hard guard
-against querying the wrong environment.) Never put triage instructions into always-loaded files such as
-`copilot-instructions.md`. The Claude Code skill likewise requires an explicit `/loadtest-triage <env>` call and uses only
-`mcp__grafana-<env>__*` tools. The triage never edits code: the deployed version may differ from the code in the IDE
-(see the "Version rule" in `triage/environments/uat.md`).
+**Isolation from everyday skills and prompts (lab).** Even in the lab the triage is kept apart from normal coding
+prompts: the Copilot prompt file only runs on an explicit `/lab-loadtest-triage` call and its `tools` list allows just
+the `grafana-lab` tools. That file is not hand-written: `scripts/gen-prompts.sh` renders one per `ide`-type environment
+from a single template (`triage/templates/loadtest-triage.prompt.md.tmpl`) and deletes the prompt file of any
+`script`-type environment; `scripts/gen-prompts.sh --check` catches drift and leaks in CI. Never put triage
+instructions into always-loaded files such as `copilot-instructions.md`. The Claude Code skill requires an explicit
+`/loadtest-triage <env>` call and, for a `script`-type environment, does not triage but prints the `triage.sh`
+command. The triage never edits code: the deployed version may differ from the code in the IDE (see the "Version rule"
+in `triage/environments/uat.md`).
 
 If your client cannot resolve the relative `./scripts/grafana-mcp.sh` path, use an absolute one.
 
@@ -185,17 +201,44 @@ same. In binary mode `GRAFANA_URL` defaults to `http://localhost:3000` (not host
 
 ### 3. Running the triage
 
-- **Claude Code:** open `claude` in the project folder, approve the `.mcp.json` servers, then
-  `/loadtest-triage lab --last 15m` (for UAT: `/loadtest-triage uat ...`, after `.env.mcp.uat` and
-  `triage/environments/uat.md` are filled in).
+**Locked environments (dev, uat): one command.**
+
+```bash
+scripts/triage.sh uat 2026-11-06T14:00:00+03:00 2026-11-06T14:40:00+03:00 --service credit-service
+```
+
+Window forms: two RFC3339 timestamps, `--last 30m`, or `--date 2026-11-06 --from 14:00 --to 14:40 --tz +03:00`.
+Options: `--service <name>` (default `credit-service`), `--agent claude|copilot` (default: `copilot` if on PATH, else
+`claude`), `--out <file>`, `--dry-run` (runs nothing; prints the command, the temporary MCP config and the prompt —
+start with this on day one at the company). The script, in order: validates the window with `triage-window.py` →
+writes a lock file and a temporary MCP config known only to this run → hands the fixed prompt (instruction + environment
+definition + window, file contents embedded) to the agent CLI non-interactively; the agent has no file, shell or write
+tools, only the 9 read-only `grafana-<env>` tools → writes the report to
+`triage/reports/<env>-<from>-<to>-<service>.md` → on exit (even when interrupted) removes the lock and the temp
+config, and the server dies. `scripts/mcp-audit-proxy.py` sits in front of the server: every `tools/call` (tool name,
+LogQL, time range; never log contents) is written next to the report as `…audit.jsonl`. **Zero calls = the report is
+rejected** (exit 3, text kept as `.rejected.md`): in the lab, with a wrong Copilot CLI permission syntax, the model wrote a
+completely invented report without a single query; this guard catches that and answers "who queried what, when". For Claude the command is `claude -p --mcp-config <tmp> --strict-mcp-config
+--allowedTools mcp__grafana-<env>`; for Copilot CLI it is `copilot -p … --additional-mcp-config @<tmp> --allow-tool
+grafana-<env> -s --no-ask-user`; if the account's default model is rejected (`CAPIError 400 model is not supported`)
+set a model such as `COPILOT_MODEL=gpt-4.1`. **Copilot policy:** on this machine the Copilot CLI 1.0.15 account blocked
+custom MCP servers (`--output-format json` shows `1 MCP server was blocked by policy: 'grafana-lab'`); the model never
+saw the server, wrote an invented report, and the audit guard rejected it. For the CLI to work at the company the
+"MCP servers in Copilot" policy must be enabled; verify on day one with `--dry-run` and a lab run. Older versions also
+had bugs combining `-p` with MCP ([github/copilot-cli#1592](https://github.com/github/copilot-cli/issues/1592),
+[#633](https://github.com/github/copilot-cli/issues/633)). The Claude Code path is verified end to end in the lab. To keep the token off disk, put `GRAFANA_SERVICE_ACCOUNT_TOKEN_CMD="vault kv get …"` in `.env.mcp.<env>`;
+the wrapper runs it at every start and passes the output to the server as an environment variable.
+
+**Lab: from chat.**
+
+- **Claude Code:** open `claude` in the project folder, approve the `.mcp.json` server, then `/loadtest-triage lab --last 15m`.
   Headless:
   `claude -p "/loadtest-triage lab --last 15m" --mcp-config .mcp.json --allowedTools "mcp__grafana-lab,Read,Skill,Bash(python3 scripts/triage-window.py:*)"`
-  (the last permission lets the window script run; without it the skill validates an RFC3339 pair with offset and uses
-  it as-is). A valid CLI session is required; on "OAuth session expired" run `claude login` first.
-- **Copilot:** in VS Code start the relevant server in `.vscode/mcp.json`; in Copilot Chat (Agent mode) run
-  `/uat-loadtest-triage` (or `/lab-loadtest-triage`) and enter the window.
-- **Cursor:** enable `grafana-uat` (or `grafana-lab`) under Settings → MCP and ask the chat to apply the instruction
-  file for that environment.
+  (the last permission is for the window script; a valid CLI session is required, on "OAuth session expired" run `claude login`).
+- **Copilot:** in VS Code start `grafana-lab` from `.vscode/mcp.json`; in Copilot Chat (Agent mode) run `/lab-loadtest-triage` and enter the window.
+- **Cursor:** enable `grafana-lab` under Settings → MCP and ask the chat to apply the instruction file for lab.
+- The same script works for the lab too: `scripts/triage.sh lab --last 15m`. A prompt change bound for the company is
+  tried here first, then in `dev` with the same command.
 
 The inputs are the environment name and the time window ("the load test ran in UAT at ..."); the instruction file
 queries only that environment and that window.
@@ -401,10 +444,11 @@ loki/loki.yaml         single-binary Loki 3.x
 alloy/config.alloy     docker log collection → Loki (PII masking, k6 containers dropped)
 grafana/               datasource + dashboard provisioning
 k6/                    load scenario
-triage/                LOADTEST_TRIAGE.md (single source of the triage), environments/, templates/, reports/
+triage/                LOADTEST_TRIAGE.md (single source of the triage), environments/<env>.md (first line: type=ide|script), templates/, reports/
 docs/LOG_CONTRACT.md   stack-independent log contract (the fields the triage expects)
 docs/loadtest-ai-triage-sunum.pptx  management deck (Turkish)
 samples/dotnet-echo-service/  ASP.NET Core + Serilog sample implementing the contract (profile: samples)
-scripts/               SA token, MCP server launcher, tools-list check, prompt generator, time-window validator
+scripts/               triage.sh (sole entry for locked environments), grafana-mcp.sh (MCP wrapper: binary, lock, token command),
+                       mcp-audit-proxy.py (tool-call audit trail), triage-window.py, gen-prompts.sh, create-grafana-sa-token.sh, mcp-tools-list.sh
 .mcp.json .vscode/ .cursor/ .claude/ .github/   thin client configs
 ```

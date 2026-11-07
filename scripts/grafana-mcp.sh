@@ -22,12 +22,23 @@
 #   Corporate proxy / custom CA pass through in both modes: HTTPS_PROXY, HTTP_PROXY, NO_PROXY and
 #   SSL_CERT_FILE (in docker mode the CA bundle is bind-mounted read-only into the container).
 #
+# Environment TYPE (first line of triage/environments/<environment>.md: `<!-- triage-env type=ide|script -->`):
+#   ide    - the server may be registered in IDE MCP configs and started by any chat (lab only).
+#   script - LOCKED: the server starts only as a child of scripts/triage.sh, which passes a lock file in
+#            LOADTEST_TRIAGE_LOCK (contains the pid of the running triage.sh). Without a live lock the server
+#            refuses to start, so no IDE chat, prompt or injected instruction can ever reach that Grafana.
+#            A missing definition file or marker counts as `script` (fail closed).
+#
 # Env (from .env.mcp.<environment> or the caller):
-#   GRAFANA_SERVICE_ACCOUNT_TOKEN  required (scripts/create-grafana-sa-token.sh writes it for the lab)
+#   GRAFANA_SERVICE_ACCOUNT_TOKEN      token (scripts/create-grafana-sa-token.sh writes it for the lab), or
+#   GRAFANA_SERVICE_ACCOUNT_TOKEN_CMD  a shell command whose stdout is the token (vault, az keyvault, op read, ...);
+#                                      evaluated at every start, nothing is written to disk. Wins over the static one.
 #   GRAFANA_URL                    optional, mode-dependent default (see above)
 #   MCP_GRAFANA_BIN                optional, path to an mcp-grafana binary
 #   MCP_GRAFANA_MODE               optional, binary | docker  (default: binary; docker auto-fallback only for lab)
 #   MCP_GRAFANA_EXTRA_ARGS         optional, extra flags appended to the server command line
+#   MCP_AUDIT_LOG                  optional, path: every tools/call is appended there as JSONL through
+#                                  scripts/mcp-audit-proxy.py (triage.sh sets it; proves the report used real queries)
 #   HTTPS_PROXY / HTTP_PROXY / NO_PROXY / SSL_CERT_FILE   optional, passed through
 set -euo pipefail
 
@@ -36,6 +47,32 @@ MCP_ENV="${1:-lab}"
 case "$MCP_ENV" in
   *[!a-z0-9_-]*|"") echo "grafana-mcp.sh: invalid environment name '$MCP_ENV' (use e.g. lab, uat, preprod)" >&2; exit 1 ;;
 esac
+
+# ---------------------------------------------------------------- environment type + lock
+ENV_DEF="$ROOT/triage/environments/$MCP_ENV.md"
+ENV_TYPE="script"
+if [ -f "$ENV_DEF" ]; then
+  ENV_TYPE="$(head -n 1 "$ENV_DEF" | sed -n 's/.*triage-env type=\([a-z]*\).*/\1/p')"
+  ENV_TYPE="${ENV_TYPE:-script}"
+fi
+if [ "$ENV_TYPE" = "script" ]; then
+  LOCK="${LOADTEST_TRIAGE_LOCK:-}"
+  LOCK_PID=""
+  [ -n "$LOCK" ] && [ -f "$LOCK" ] && LOCK_PID="$(head -n 1 "$LOCK" | tr -dc '0-9')"
+  if [ -z "$LOCK_PID" ] || ! kill -0 "$LOCK_PID" 2>/dev/null; then
+    cat >&2 <<MSG
+grafana-mcp.sh: environment '$MCP_ENV' is LOCKED (type=script): only scripts/triage.sh may start this server.
+  No live triage lock was found (LOADTEST_TRIAGE_LOCK='${LOCK:-}'). This is by design: a script-type
+  environment is never registered in an IDE and cannot be reached from a chat or a prompt.
+  Run:  scripts/triage.sh $MCP_ENV <from> <to> [--service <name>]
+MSG
+    exit 1
+  fi
+  echo "grafana-mcp.sh: environment=$MCP_ENV type=script lock=$(basename "$LOCK") (triage.sh pid $LOCK_PID)" >&2
+else
+  echo "grafana-mcp.sh: environment=$MCP_ENV type=$ENV_TYPE" >&2
+fi
+
 
 ENV_FILE="$ROOT/.env.mcp.$MCP_ENV"
 # backwards compatibility: the lab used to live in plain .env.mcp
@@ -53,8 +90,16 @@ else
   exit 1
 fi
 
-: "${GRAFANA_SERVICE_ACCOUNT_TOKEN:?GRAFANA_SERVICE_ACCOUNT_TOKEN is not set in $ENV_FILE}"
-echo "grafana-mcp.sh: environment=$MCP_ENV env-file=$(basename "$ENV_FILE")" >&2
+# ---------------------------------------------------------------- token (command wins over static value)
+if [ -n "${GRAFANA_SERVICE_ACCOUNT_TOKEN_CMD:-}" ]; then
+  if ! GRAFANA_SERVICE_ACCOUNT_TOKEN="$(bash -c "$GRAFANA_SERVICE_ACCOUNT_TOKEN_CMD" </dev/null | tr -d '\r\n')" \
+     || [ -z "$GRAFANA_SERVICE_ACCOUNT_TOKEN" ]; then
+    echo "grafana-mcp.sh: GRAFANA_SERVICE_ACCOUNT_TOKEN_CMD produced no token (is your key management session active?)" >&2
+    exit 1
+  fi
+  echo "grafana-mcp.sh: token fetched via GRAFANA_SERVICE_ACCOUNT_TOKEN_CMD (not stored)" >&2
+fi
+: "${GRAFANA_SERVICE_ACCOUNT_TOKEN:?neither GRAFANA_SERVICE_ACCOUNT_TOKEN nor GRAFANA_SERVICE_ACCOUNT_TOKEN_CMD is set in $ENV_FILE}"
 
 # Tool surface: ONLY datasource + loki tool categories, and no write tools even inside those.
 # Flag names verified against `mcp-grafana --help` (mcp/grafana image, 2026-11).
@@ -67,6 +112,13 @@ echo "grafana-mcp.sh: environment=$MCP_ENV env-file=$(basename "$ENV_FILE")" >&2
 MCP_ARGS=(-t stdio --enabled-tools datasource,loki --disable-write)
 # shellcheck disable=SC2206
 [ -n "${MCP_GRAFANA_EXTRA_ARGS:-}" ] && MCP_ARGS+=(${MCP_GRAFANA_EXTRA_ARGS})
+# Optional audit proxy in front of the server (stdio passthrough that records tools/call as JSONL).
+AUDIT=()
+if [ -n "${MCP_AUDIT_LOG:-}" ]; then
+  command -v python3 >/dev/null || { echo "grafana-mcp.sh: MCP_AUDIT_LOG needs python3" >&2; exit 1; }
+  AUDIT=(python3 "$ROOT/scripts/mcp-audit-proxy.py" "$MCP_AUDIT_LOG" --)
+  echo "grafana-mcp.sh: audit log -> $MCP_AUDIT_LOG" >&2
+fi
 
 # ---------------------------------------------------------------- mode selection
 MODE="${MCP_GRAFANA_MODE:-binary}"
@@ -116,7 +168,7 @@ if [ "$MODE" = "binary" ]; then
   esac
   export GRAFANA_URL GRAFANA_SERVICE_ACCOUNT_TOKEN
   echo "grafana-mcp.sh: binary mode ($BIN) -> $GRAFANA_URL" >&2
-  exec "$BIN" "${MCP_ARGS[@]}"
+  exec ${AUDIT[@]+"${AUDIT[@]}"} "$BIN" "${MCP_ARGS[@]}"
 fi
 
 # ---------------------------------------------------------------- docker mode (lab, or MCP_GRAFANA_MODE=docker)
@@ -143,4 +195,4 @@ fi
 
 export GRAFANA_URL GRAFANA_SERVICE_ACCOUNT_TOKEN
 echo "grafana-mcp.sh: docker mode (mcp/grafana) -> $GRAFANA_URL" >&2
-exec docker "${DOCKER_ARGS[@]}" mcp/grafana "${MCP_ARGS[@]}"
+exec ${AUDIT[@]+"${AUDIT[@]}"} docker "${DOCKER_ARGS[@]}" mcp/grafana "${MCP_ARGS[@]}"

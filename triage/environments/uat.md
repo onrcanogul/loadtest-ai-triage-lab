@@ -1,13 +1,17 @@
+<!-- triage-env type=script -->
 # Ortam: uat
 
-Kurumsal UAT ortamı. Yük testleri burada test ekibi tarafından koşulur; biz UAT'ye, test script'lerine ve
+Tetikleme tipi **script**: bu ortam hiçbir IDE'de MCP sunucusu olarak kayıtlı **değildir** ve sohbetten
+çağrılamaz. Tek giriş `scripts/triage.sh uat <from> <to> [--service X]`; sunucu o komutun çocuk süreci olarak
+doğar, komut bitince ölür. Kurumsal UAT ortamı. Yük testleri burada test ekibi tarafından koşulur; biz UAT'ye, test script'lerine ve
 UAT'deki koda **doğrudan erişemeyiz**. Tek erişim: kurumun Grafana'sı (HTTP API, Viewer token) → UAT Loki.
 `<doldur>` yazan alanları ilk kullanımdan önce doldurun; dolu olmayan bir alanı triage sırasında **varsayma**,
 kullanıcıya sor.
 
 | Alan | Değer |
 |---|---|
-| MCP sunucusu | `grafana-uat` (yalnızca bu sunucunun araçları kullanılır; `grafana-lab` araçlarına dokunma) |
+| Tetikleme | `script` — yalnızca `scripts/triage.sh uat …`; IDE'de kayıtlı değil |
+| MCP sunucusu | `grafana-uat` (yalnızca `triage.sh` başlatır; yalnızca bu sunucunun araçları kullanılır) |
 | Env dosyası | `.env.mcp.uat` (`.env.mcp.uat.example`'dan kopyala; token Grafana yöneticilerinden) |
 | Grafana | `<doldur>` (ör. https://grafana.uat.example.internal; VPN/proxy gerekebilir) |
 | Loki datasource uid | `<doldur>` — `list_datasources` ile bul; birden fazla Loki varsa UAT olanı seç ve adını raporda yaz |

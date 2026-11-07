@@ -3,12 +3,9 @@
     "grafana-lab": {
       "type": "stdio",
       "command": "${workspaceFolder}/scripts/grafana-mcp.sh",
-      "args": ["lab"]
-    },
-    "grafana-uat": {
-      "type": "stdio",
-      "command": "${workspaceFolder}/scripts/grafana-mcp.sh",
-      "args": ["uat"]
+      "args": [
+        "lab"
+      ]
     }
   }
 }
